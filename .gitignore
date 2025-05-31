@@ -1,0 +1,17 @@
+# Archivos temporales
+*.pyc
+*.pyo
+*.log
+
+# Entornos virtuales
+venv/
+.env/
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
+
+# Configuración de PyInstaller (opcional si no quieres subir el ejecutable)
+dist/
+build/
+*.spec
