@@ -1,13 +1,14 @@
 import os
+import sys
 import threading
 import tkinter as tk
-from PIL import ImageGrab, Image, ImageDraw
+from PIL import Image, ImageDraw
 import pytesseract
 import pyperclip
 import keyboard
 import ctypes
 import pystray
-import sys
+import mss
 
 # ----------------------------------------------------
 # 1) Configuración básica de Tesseract y tessdata-dir
@@ -16,14 +17,8 @@ pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tessera
 os.environ['TESSDATA_PREFIX'] = r'C:\Program Files\Tesseract-OCR\tessdata'
 
 def get_virtual_screen_bounds():
-    """
-    Usa ctypes para obtener las dimensiones del "escritorio virtual" en Windows:
-    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN.
-    Devuelve (left, top, width, height).
-    """
     user32 = ctypes.windll.user32
     user32.SetProcessDPIAware()
-
     left   = user32.GetSystemMetrics(76)  # SM_XVIRTUALSCREEN
     top    = user32.GetSystemMetrics(77)  # SM_YVIRTUALSCREEN
     width  = user32.GetSystemMetrics(78)  # SM_CXVIRTUALSCREEN
@@ -31,32 +26,21 @@ def get_virtual_screen_bounds():
     return left, top, width, height
 
 def run_ocr():
-    """
-    Muestra una ventana semitransparente que abarca TODO el escritorio virtual.
-    Permite arrastrar un rectángulo con el ratón, captura esa región y hace OCR.
-    """
     left, top, width, height = get_virtual_screen_bounds()
-
-    # DEBUG: imprime las dimensiones de todo el escritorio virtual
-    print(f"[DEBUG] Escritorio virtual -> left={left}, top={top}, "
-          f"width={width}, height={height}")
 
     class ScreenOCR(tk.Tk):
         def __init__(self):
             super().__init__()
-            # Quita bordes y barra de título; transparencia y siempre encima
             self.overrideredirect(True)
             self.attributes('-alpha', 0.3)
             self.attributes('-topmost', True)
-            # Coloca la ventana exactamente en (left, top) con tamaño (width x height)
             self.geometry(f"{width}x{height}+{left}+{top}")
             self.config(cursor="cross")
 
-            self.start_x_rel = None
-            self.start_y_rel = None
+            self.start_x = None
+            self.start_y = None
             self.rect = None
 
-            # Un canvas negro semitransparente para dibujar el rectángulo
             self.canvas = tk.Canvas(self, bg='black')
             self.canvas.pack(fill=tk.BOTH, expand=True)
 
@@ -65,114 +49,88 @@ def run_ocr():
             self.canvas.bind("<ButtonRelease-1>",  self.on_button_release)
 
         def on_button_press(self, event):
-            # Coordenadas relativas (dentro del canvas) donde empezó el clic
-            self.start_x_rel = event.x
-            self.start_y_rel = event.y
+            self.start_x = event.x
+            self.start_y = event.y
             self.rect = self.canvas.create_rectangle(
-                self.start_x_rel, self.start_y_rel,
-                self.start_x_rel, self.start_y_rel,
+                self.start_x, self.start_y,
+                self.start_x, self.start_y,
                 outline='red', width=2
             )
 
         def on_move(self, event):
-            # Mientras arrastras, actualiza el tamaño del rectángulo
             self.canvas.coords(
                 self.rect,
-                self.start_x_rel, self.start_y_rel,
+                self.start_x, self.start_y,
                 event.x, event.y
             )
 
         def on_button_release(self, event):
-            end_x_rel = event.x
-            end_y_rel = event.y
+            end_x = event.x
+            end_y = event.y
+            x1 = min(self.start_x, end_x) + left
+            y1 = min(self.start_y, end_y) + top
+            x2 = max(self.start_x, end_x) + left
+            y2 = max(self.start_y, end_y) + top
 
-            # Calcula las coordenadas absolutas dentro de la pantalla virtual
-            x1_abs = min(self.start_x_rel, end_x_rel) + left
-            y1_abs = min(self.start_y_rel, end_y_rel) + top
-            x2_abs = max(self.start_x_rel, end_x_rel) + left
-            y2_abs = max(self.start_y_rel, end_y_rel) + top
+            self.withdraw()  # Oculta la ventana antes de capturar
 
-            # DEBUG: imprime las coordenadas absolutas seleccionadas
-            print(f"[DEBUG] Selector terminó en absolutas -> "
-                  f"x1={x1_abs}, y1={y1_abs}, x2={x2_abs}, y2={y2_abs}")
+            with mss.mss() as sct:
+                monitor = sct.monitors[0]
+                sct_img = sct.grab(monitor)
+                img = Image.frombytes("RGB", sct_img.size, sct_img.rgb)
 
-            # Oculta la ventana para no capturarla
-            self.withdraw()
+            crop_box = (x1 - left, y1 - top, x2 - left, y2 - top)
+            region = img.crop(crop_box)
 
-            # Captura TODO el escritorio virtual usando bbox
-            full_screenshot = ImageGrab.grab(
-                bbox=(left, top, left + width, top + height)
-            )
-
-            # DEBUG: revisa el tamaño de la imagen completa
-            w_full, h_full = full_screenshot.size
-            print(f"[DEBUG] Tamaño full_screenshot -> width={w_full}, height={h_full}")
-
-            # Calcula el rect dentro de la imagen completa (coordenadas relativas)
-            crop_box = (
-                x1_abs - left,
-                y1_abs - top,
-                x2_abs - left,
-                y2_abs - top
-            )
-
-            # DEBUG: muestra el crop_box que usaremos
-            print(f"[DEBUG] crop_box relativo en full_screenshot -> {crop_box}")
-
-            # Recorta esa región y la procesa con OCR
-            region = full_screenshot.crop(crop_box)
             texto = pytesseract.image_to_string(region, lang='eng').strip()
-
-            # DEBUG: si la región está en blanco, imprime un mensaje
-            if not texto:
-                print("[DEBUG] El OCR devolvió cadena vacía. Tal vez la región está fuera de bounds o sin texto.")
-
             pyperclip.copy(texto)
-            print("Texto copiado al portapapeles:")
-            print(texto)
+
+            if texto:
+                print("Texto copiado al portapapeles:")
+                print(texto)
+            else:
+                print("No se detectó texto en la región seleccionada.")
             self.quit()
 
     app = ScreenOCR()
     app.mainloop()
 
 def create_tray_icon():
-    """
-    Crea un icono en la bandeja con un menú para salir.
-    """
-    icon_image = Image.new('RGB', (64, 64), color=(0, 0, 128))
-    draw = ImageDraw.Draw(icon_image)
-    draw.rectangle((0, 0, 64, 64), fill=(0, 0, 128))
-    draw.text((10, 20), "OCR", fill="white")
+    # Construimos la ruta absoluta al ícono, usando __file__
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    ruta_icono = os.path.join(base_dir, 'resources', 'icono_ocr.ico')
+
+    try:
+        icon_image = Image.open(ruta_icono)
+    except Exception as e:
+        print(f"No se pudo cargar el ícono: {e}. Se usará un ícono simple por defecto.")
+        icon_image = Image.new('RGB', (64, 64), color=(0, 0, 128))
+        draw = ImageDraw.Draw(icon_image)
+        draw.text((10, 20), "OCR", fill="white")
 
     def on_exit(icon, item):
         icon.stop()
         sys.exit(0)
 
-    menu = pystray.Menu(pystray.MenuItem('Exit', on_exit))
+    menu = pystray.Menu(pystray.MenuItem('Salir', on_exit))
     tray_icon = pystray.Icon("ScreenOCR", icon_image, "ScreenOCR", menu)
     tray_icon.run()
 
 def hotkey_listener():
-    """
-    Registra la hotkey global SHIFT+ALT+S.
-    Cuando la detecta, arranca run_ocr() en un hilo aparte.
-    """
     def on_hotkey():
-        print("🔔 Hotkey SHIFT+ALT+S detectada. Abriendo selección de pantalla…")
         threading.Thread(target=run_ocr, daemon=True).start()
 
     keyboard.add_hotkey('shift+alt+s', on_hotkey)
-    print("🔔 Listener activo: presiona SHIFT+ALT+S en ANY DE TUS PANTALLAS…")
-    keyboard.wait()
+    print("Presiona SHIFT+ALT+S para seleccionar una región y hacer OCR.")
 
 if __name__ == '__main__':
-    # Verifica dependencias antes de arrancar
     dependencias = [
         ('keyboard',    'keyboard'),
         ('pyperclip',   'pyperclip'),
         ('Pillow',      'PIL'),
         ('pytesseract', 'pytesseract'),
         ('pystray',     'pystray'),
+        ('mss',         'mss'),
     ]
     for pkg_name, import_name in dependencias:
         try:
@@ -181,7 +139,6 @@ if __name__ == '__main__':
             print(f"Falta instalar {pkg_name}: pip install {pkg_name.lower()}")
             exit(1)
 
-    # Lanza icono en bandeja en segundo plano
     threading.Thread(target=create_tray_icon, daemon=True).start()
-    # Lanza el listener de la hotkey
     hotkey_listener()
+    keyboard.wait()
