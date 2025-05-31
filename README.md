@@ -1,6 +1,8 @@
-##ScreenOCR
+# ScreenOCR
 
-**ScreenOCR** es una utilidad liviana en Python que permite extraer texto de cualquier área seleccionada de la pantalla con solo presionar un atajo de teclado. El texto reconocido queda automáticamente copiado al portapapeles para que puedas pegarlo donde lo necesites
+**ScreenOCR** es una utilidad liviana en Python que permite extraer texto de cualquier área seleccionada de la pantalla con solo presionar un atajo de teclado. El texto reconocido queda automáticamente copiado al portapapeles para que puedas pegarlo donde lo necesites.
+
+---
 
 ## Características
 
